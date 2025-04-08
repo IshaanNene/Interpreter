@@ -17,8 +17,7 @@ def init_db():
     )
     cursor = conn.cursor()
 
-    # make tokenizerLog table which will have details on the input file, timestamp, code length, status, etc.
-    # honestly status could be a bool - should change
+    # Create tables if they don't exist
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS TokenizerLog (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,10 +42,25 @@ def init_db():
             FOREIGN KEY (tokenizer_log_id) REFERENCES TokenizerLog(id)
         )
     ''')
+
+    # Create view for TokenizerLog
+    cursor.execute('''
+        CREATE OR REPLACE VIEW TokenizerLogView AS
+        SELECT
+            id AS LogID,
+            name AS FileName,
+            timestamp AS LoggedAt,
+            length_of_code AS CodeLength,
+            status AS Status,
+            total_tokens AS TotalTokens,
+            lines_processed AS LinesProcessed,
+            error_message AS ErrorMessage
+        FROM TokenizerLog
+    ''')
+
     conn.commit()
     conn.close()
 
-# file data in
 def log_tokenizer_entry(name, length_of_code, status, total_tokens=0, lines_processed=0, error_message=None):
     conn = mysql.connector.connect(
         host=os.getenv("DB_HOST"),
@@ -64,7 +78,6 @@ def log_tokenizer_entry(name, length_of_code, status, total_tokens=0, lines_proc
     conn.close()
     return log_id
 
-# tokens deets in
 def log_tokens(log_id, tokens):
     conn = mysql.connector.connect(
         host=os.getenv("DB_HOST"),
@@ -81,27 +94,13 @@ def log_tokens(log_id, tokens):
     conn.commit()
     conn.close()
 
-# Keywords mapping
 KEYWORDS = {
-    "and": "AND",
-    "class": "CLASS",
-    "else": "ELSE",
-    "false": "FALSE",
-    "for": "FOR",
-    "fun": "FUN",
-    "if": "IF",
-    "nil": "NIL",
-    "or": "OR",
-    "print": "PRINT",
-    "return": "RETURN",
-    "super": "SUPER",
-    "this": "THIS",
-    "true": "TRUE",
-    "var": "VAR",
-    "while": "WHILE",
+    "and": "AND", "class": "CLASS", "else": "ELSE", "false": "FALSE",
+    "for": "FOR", "fun": "FUN", "if": "IF", "nil": "NIL", "or": "OR",
+    "print": "PRINT", "return": "RETURN", "super": "SUPER", "this": "THIS",
+    "true": "TRUE", "var": "VAR", "while": "WHILE",
 }
 
-# Token class
 class Token:
     def __init__(self, type: str, lexeme: str, literal, line: int):
         self.type = type
@@ -113,7 +112,6 @@ class Token:
         literal_str = "null" if self.literal is None else str(self.literal)
         return f"{self.type} {self.lexeme} {literal_str}"
 
-# Scanner class
 class Scanner:
     def __init__(self, source: str):
         self.source = source
@@ -175,7 +173,6 @@ class Scanner:
         text = self.source[self.start:self.current]
         self.tokens.append(Token(type, text, literal, self.line))
 
-# token with highlighting!
 class Visualizer:
     def __init__(self, source, tokens):
         self.source = source
@@ -184,11 +181,9 @@ class Visualizer:
     def display_tokens(self):
         for idx, token in enumerate(self.tokens):
             os.system("clear" if os.name == "posix" else "cls")
-
             highlighted_code = self.highlight_token(idx)
             print("Input Code:\n" + highlighted_code)
             print(f"\nTokens Processed:")
-
             for processed_token in self.tokens[:idx + 1]:
                 print(processed_token)
             time.sleep(2)
@@ -203,24 +198,54 @@ class Visualizer:
                 result.append(token_text)
         return self.source.replace(self.tokens[current_idx].lexeme, result[current_idx], 1)
 
+def view_logs():
+    conn = mysql.connector.connect(
+        host=os.getenv("DB_HOST"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME")
+    )
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM TokenizerLogView")
+    rows = cursor.fetchall()
+    col_names = [desc[0] for desc in cursor.description]
+    print("Tokenizer Logs:\n")
+    print(" | ".join(col_names))
+    print("-" * 80)
+    for row in rows:
+        print(" | ".join(str(cell) if cell is not None else "NULL" for cell in row))
+    conn.close()
+
 def main():
     init_db()
-    
-    if len(sys.argv) < 3:
-        print("Usage: python3 main.py <command> <filename>", file=sys.stderr)
+
+    if len(sys.argv) < 2:
+        print("Usage: python3 main.py <command> [<filename>]", file=sys.stderr)
         exit(1)
 
     command = sys.argv[1]
-    filename = sys.argv[2]
 
-    with open(filename) as file:
-        file_contents = file.read()
+    if command == "view":
+        view_logs()
+    elif command == "tokenize":
+        if len(sys.argv) < 3:
+            print("Usage: python3 main.py tokenize <filename>", file=sys.stderr)
+            exit(1)
 
-    scanner = Scanner(file_contents)
-    tokens = scanner.scan_tokens()
+        filename = sys.argv[2]
+        with open(filename) as file:
+            file_contents = file.read()
 
-    visualizer = Visualizer(file_contents, tokens)
-    visualizer.display_tokens()
+        scanner = Scanner(file_contents)
+        tokens = scanner.scan_tokens()
+
+        log_id = log_tokenizer_entry(filename, len(file_contents), "SUCCESS", total_tokens=len(tokens), lines_processed=file_contents.count('\n') + 1)
+        log_tokens(log_id, tokens)
+
+        visualizer = Visualizer(file_contents, tokens)
+        visualizer.display_tokens()
+    else:
+        print("Unknown command. Try 'tokenize' or 'view'.")
 
 if __name__ == "__main__":
     main()
